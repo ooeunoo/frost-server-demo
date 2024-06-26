@@ -1,11 +1,10 @@
-// ANCHOR: tkg_gen
 use ethers::utils::public_key_to_address;
 use frost_secp256k1 as frost;
 use k256::ecdsa::VerifyingKey;
-use k256::elliptic_curve::sec1::ToEncodedPoint; // Ensure you have the k256 crate in your Cargo.toml
+use k256::elliptic_curve::sec1::ToEncodedPoint;
 use k256::EncodedPoint;
 use rand::thread_rng;
-use std::collections::BTreeMap; // Ensure you have the necessary crate for key conversion
+use std::collections::BTreeMap;
 
 fn main() -> Result<(), frost::Error> {
     let mut rng = thread_rng();
@@ -112,6 +111,7 @@ fn main() -> Result<(), frost::Error> {
     // ANCHOR: aggregate
     let group_signature = frost::aggregate(&signing_package, &signature_shares, &pubkey_package)?;
     // ANCHOR_END: aggregate
+    
     println!("pubkey_package: {:?}", pubkey_package);
     println!("group signature: {:?}", group_signature);
     // Check that the threshold signature can be verified by the group public
@@ -122,6 +122,7 @@ fn main() -> Result<(), frost::Error> {
         .verify(message, &group_signature)
         .is_ok();
     // ANCHOR_END: verify
+    println!("{:?}", is_signature_valid);
 
     Ok(())
 }
