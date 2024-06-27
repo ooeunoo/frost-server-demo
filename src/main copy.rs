@@ -1,24 +1,12 @@
-use ethereum_tx_sign::{LegacyTransaction, Transaction};
-
-use ethers::{
-    core::types::TransactionRequest,
-    middleware::SignerMiddleware,
-    prelude::*,
-    providers::{Http, Middleware, Provider},
-    signers::{LocalWallet, Signer},
-    utils::{parse_ether, public_key_to_address},
-};
-use eyre::Result;
+use ethers::utils::public_key_to_address;
 use frost_secp256k1 as frost;
-use frost_secp256k1::serde::Serialize;
-use frost_secp256k1::Signature;
 use k256::ecdsa::VerifyingKey;
+use k256::elliptic_curve::sec1::ToEncodedPoint;
+use k256::EncodedPoint;
 use rand::thread_rng;
-use rlp::{Encodable, RlpStream};
 use std::collections::BTreeMap;
 
-#[tokio::main]
-async fn main() -> Result<(), frost::Error> {
+fn main() -> Result<(), frost::Error> {
     let mut rng = thread_rng();
     let max_signers = 5;
     let min_signers = 3;
@@ -28,18 +16,23 @@ async fn main() -> Result<(), frost::Error> {
         frost::keys::IdentifierList::Default,
         &mut rng,
     )?;
+    // ANCHOR_END: tkg_gen
 
     let pubkey = pubkey_package.verifying_key();
+    println!("{:?}", pubkey);
+
+    // Serialize the pubkey from frost to bytes
     let pubkey_bytes = pubkey.serialize();
+    // Create a k256 VerifyingKey from the serialized bytes
     let k256_pubkey = VerifyingKey::from_sec1_bytes(&pubkey_bytes).expect("valid key bytes");
     let address = public_key_to_address(&k256_pubkey);
 
-    println!("rng: {:?}", rng);
-    println!("shares: {:?}", shares);
-    println!("pubkey_pages: {:?}", pubkey_package);
     println!("Ethereum address: {:?}", address);
+    println!("shares: {:?}", shares);
 
-    let _ = send_to_test_ether(address).await;
+    // Verifies the secret shares from the dealer and store them in a BTreeMap.
+    // In practice, the KeyPackages must be sent to its respective participants
+    // through a confidential and authenticated channel.
     let mut key_packages: BTreeMap<_, _> = BTreeMap::new();
 
     for (identifier, secret_share) in shares {
@@ -81,29 +74,18 @@ async fn main() -> Result<(), frost::Error> {
     // - take one (unused) commitment per signing participant
     let mut signature_shares = BTreeMap::new();
     // ANCHOR: round2_package
-
-    let to_address: H160 = "0x6fC21092DA55B392b045eD78F4732bff3C580e2c"
-        .parse()
-        .expect("valid address");
-    let value = parse_ether(1u64).expect("msg");
-    println!("value: {:?}", value);
-
-    // it knows to figure out the default gas value and determine the next nonce so no need to explicitly add them unless you want to
-    let tx = TransactionRequest::new().to(to_address).value(value);
-    let tx_rlp_unsigned = tx.rlp_unsigned();
-    let tx_rlp_as_ref = tx_rlp_unsigned.as_ref();
-    println!("tx_rlp_as_ref: {:?}", tx_rlp_as_ref);
-
+    let message = "message to sign".as_bytes();
     // In practice, the SigningPackage must be sent to all participants
     // involved in the current signing (at least min_signers participants),
     // using an authenticate channel (and confidential if the message is secret).
-    let signing_package = frost::SigningPackage::new(commitments_map, tx_rlp_as_ref);
+    let signing_package = frost::SigningPackage::new(commitments_map, message);
     println!("Signing package: {:?}", signing_package);
     // ANCHOR_END: round2_package
 
     ////////////////////////////////////////////////////////////////////////////
     // Round 2: each participant generates their signature share
     ////////////////////////////////////////////////////////////////////////////
+
     // In practice, each iteration of this loop will be executed by its respective participant.
     for participant_identifier in nonces_map.keys() {
         let key_package = &key_packages[participant_identifier];
@@ -129,7 +111,7 @@ async fn main() -> Result<(), frost::Error> {
     // ANCHOR: aggregate
     let group_signature = frost::aggregate(&signing_package, &signature_shares, &pubkey_package)?;
     // ANCHOR_END: aggregate
-
+    
     println!("pubkey_package: {:?}", pubkey_package);
     println!("group signature: {:?}", group_signature);
     // Check that the threshold signature can be verified by the group public
@@ -137,43 +119,10 @@ async fn main() -> Result<(), frost::Error> {
     // ANCHOR: verify
     let is_signature_valid = pubkey_package
         .verifying_key()
-        .verify(tx_rlp_as_ref, &group_signature)
+        .verify(message, &group_signature)
         .is_ok();
     // ANCHOR_END: verify
     println!("{:?}", is_signature_valid);
-
-    Ok(())
-}
-
-async fn send_to_test_ether(to_address: Address) -> Result<()> {
-    let provider = Provider::<Http>::try_from(
-        "https://sepolia.infura.io/v3/6a374a6162be4f7cabf041885f15d3b1",
-    )?;
-
-    let chain_id = provider.get_chainid().await?;
-
-    let wallet: LocalWallet = "aa2694dd8edaa44893fbd0d0f3110d821fb071ccd9e6d434aee58078cf83caa5"
-        .parse::<LocalWallet>()?
-        .with_chain_id(chain_id.as_u64());
-    println!("{:?}", wallet);
-    // connect the wallet to the provider
-    let client = SignerMiddleware::new(provider, wallet);
-
-    // Craft the transaction
-    // The below code knows how to figure out the
-    // default gas value and determine the next nonce
-    // so you do not need to explicitly add them.
-    let tx = TransactionRequest::new()
-        .to(to_address)
-        .value(U256::from(parse_ether(0.001)?));
-
-    let pending_tx = client.send_transaction(tx, None).await?;
-    let receipt = pending_tx
-        .await?
-        .ok_or_else(|| eyre::format_err!("tx dropped from mempool"))?;
-    let tx = client.get_transaction(receipt.transaction_hash).await?;
-    println!("Sent tx: {}\n", serde_json::to_string(&tx)?);
-    println!("Tx receipt: {}", serde_json::to_string(&receipt)?);
 
     Ok(())
 }
